@@ -1,5 +1,7 @@
 # h-katon
-Cydonian fields tiimi tulemused häkatoni raamestikus (Detsember 2023) 
+Cydonian fields tiimi tulemused häkatoni raamestikus (Detsember 2023). 
+
+Tiimi liikmed: Kristina Jumankina, Ken Kruuser, Hanna Kätlin Ardel, Vladislav Šmakov, Anton Baranov. 
 
 Antud repository's saab leida dokumentatsiooni kõigest mida me jõudsime uurida ja prototüübida häkatoni raamestikus. 
 
