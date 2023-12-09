@@ -1,0 +1,218 @@
+---
+title: "hackhaton"
+output: html_document
+date: "2023-12-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r load libraries}
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+library(stringr)
+library(igraph)
+library(treemap)
+```
+
+## 1. Transactions volume 
+
+The inconsistency in transaction volumes over time, with significant spikes on certain days, could suggest that these wallets are used for specific purposes rather than regular daily transactions. The spikes in transaction volume warrant further investigation.
+
+```{r, echo=FALSE}
+
+transactions <- read_excel("CryptoWallets.xlsx")
+transactions$DateTime <- as.POSIXct(transactions$UnixTimestamp, origin="1970-01-01")
+transactions$Date <- as.Date(transactions$DateTime)
+
+
+transactions$`Value_IN(ETH)` <- as.numeric(as.character(transactions$`Value_IN(ETH)`))
+transactions$`Value_OUT(ETH)` <- as.numeric(as.character(transactions$`Value_OUT(ETH)`))
+
+# Handle NA values that may result from conversion issues
+transactions$`Value_IN(ETH)`[is.na(transactions$`Value_IN(ETH)`)] <- 0
+transactions$`Value_OUT(ETH)`[is.na(transactions$`Value_OUT(ETH)`)] <- 0
+
+# Group by date and wallet_id, then summarise the in and out volumes
+daily_volume_by_id <- transactions %>%
+  group_by(Date, Wallet_id) %>%
+  summarise(Total_Value_IN = sum(`Value_IN(ETH)`), Total_Value_OUT = sum(`Value_OUT(ETH)`), .groups = 'drop')
+
+# Reshape the data for plotting
+daily_volume_long <- daily_volume_by_id %>%
+  pivot_longer(cols = c(Total_Value_IN, Total_Value_OUT), names_to = "TransactionType", values_to = "Volume")
+
+# Define a discrete color palette
+my_colors <- c("#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b")
+
+ggplot(daily_volume_long %>% filter(TransactionType == "Total_Value_IN"), aes(x=Date, y=Volume, group=Wallet_id, color=factor(Wallet_id))) +
+  geom_line() +
+  scale_color_manual(values=my_colors) +
+  labs(title="Daily Incoming Transaction Volume by Wallet ID", x="Date", y="Volume (ETH)", color="Wallet ID") +
+  theme_minimal() +
+  theme(legend.position="bottom")
+
+ggplot(daily_volume_long %>% filter(TransactionType == "Total_Value_OUT"), aes(x=Date, y=Volume, group=Wallet_id, color=factor(Wallet_id))) +
+  geom_line() +
+  scale_color_manual(values=my_colors) +
+  labs(title="Daily Outgoing Transaction Volume by Wallet ID", x="Date", y="Volume (ETH)", color="Wallet ID") +
+  theme_minimal() +
+  theme(legend.position="bottom")
+```
+
+
+## 2. Transaction fees 
+
+```{r, echo=FALSE}
+transactions$TxnFee_ETH <- as.numeric(transactions$`TxnFee(ETH)`)
+transactions$TxnFee_USD <- as.numeric(transactions$`TxnFee(USD)`)
+daily_fees <- transactions %>%
+  group_by(Date) %>%
+  summarise(Total_TxnFee_ETH = sum(TxnFee_ETH), Average_TxnFee_ETH = mean(TxnFee_ETH),
+            Total_TxnFee_USD = sum(TxnFee_USD), Average_TxnFee_USD = mean(TxnFee_USD))
+
+
+ggplot(daily_fees, aes(x=Date)) +
+  geom_line(aes(y=Total_TxnFee_ETH, color="Total Fee in ETH")) +
+  geom_line(aes(y=Average_TxnFee_ETH, color="Average Fee in ETH")) +
+  labs(title="Daily Ethereum Transaction Fees", x="Date", y="Transaction Fee (ETH)") +
+  theme_minimal() +
+  scale_color_manual(values=c("Total Fee in ETH"="green", "Average Fee in ETH"="orange"),
+                     name="Fee Type", 
+                     labels=c("Total Fee in ETH", "Average Fee in ETH")) +
+  theme(legend.position="bottom")
+```
+
+
+## 3. Temporal analysis
+
+Temporal analysis focuses on understanding patterns over time within your dataset. When analyzing Ethereum transaction data, a temporal analysis can provide insights into: activity trends, seasonality etc.
+
+```{r, echo=FALSE}
+transactions$DayOfWeek <- weekdays(transactions$Date)
+transactions$HourOfDay <- format(transactions$DateTime, format="%H")
+
+weekly_pattern <- transactions %>%
+  group_by(DayOfWeek) %>%
+  summarise(Count = n(), Total_Value_IN = sum(`Value_IN(ETH)`), Total_Value_OUT = sum(`Value_OUT(ETH)`))
+
+hourly_pattern <- transactions %>%
+  group_by(HourOfDay) %>%
+  summarise(Count = n(), Total_Value_IN = sum(`Value_IN(ETH)`), Total_Value_OUT = sum(`Value_OUT(ETH)`))
+
+# Plot by Day of Week
+ggplot(weekly_pattern, aes(x=DayOfWeek, y=Count)) +
+  geom_bar(stat="identity", fill="steelblue") +
+  theme_minimal() +
+  labs(title="Transactions by Day of the Week", x="Day of Week", y="Number of Transactions") +
+  theme(axis.text.x=element_text(angle=90, hjust=1))
+
+# Plot by Hour of Day
+ggplot(hourly_pattern, aes(x=HourOfDay, y=Count)) +
+  geom_bar(stat="identity", fill="darkgreen") +
+  theme_minimal() +
+  labs(title="Transactions by Hour of Day", x="Hour of Day", y="Number of Transactions") +
+  theme(axis.text.x=element_text(angle=90, hjust=1))
+```
+## 4. Counterparty analysis 
+
+Counterparty analysis with data on the 'From', 'To', and the number of transactions between each pair can give you insights into the transaction patterns and relationships within the network.
+
+Unusual patterns, such as a sudden spike in transactions or transactions with wallets known for dubious activities, could be red flags for fraudulent activity or money laundering.
+
+```{r, echo=FALSE}
+unique_addresses <- unique(c(transactions$From, transactions$To))
+edges <- data.frame(From = transactions$From, To = transactions$To)
+transaction_network <- graph_from_data_frame(edges, directed = TRUE)
+
+# Plot the network
+plot(transaction_network, vertex.size=5, vertex.label=NA, edge.arrow.size=0.5)
+
+counterparty_frequency <- transactions %>%
+  count(From, To) %>%
+  arrange(desc(n))
+
+head(counterparty_frequency)
+
+library(igraph)
+g <- graph_from_data_frame(counterparty_frequency, directed=TRUE)
+
+plot(g, 
+     vertex.size=5+log1p(degree(g)), # Node size correlates with log degree of the node for better visibility
+     edge.width=counterparty_frequency$n,  # Edge width correlates with the count of transactions
+     edge.arrow.size=0.5,
+     vertex.label=NA,                # Hide vertex labels for clarity
+     layout=layout_in_circle(g))     # Use a circular layout
+
+```
+
+
+## 5. Value Fluctuation Analysis
+
+If the wallet is used for investment purposes, you can evaluate the effectiveness of the investment strategy by observing how well the timing of transactions aligns with favorable price movements.
+
+```{r, echo=FALSE}
+transactions$Value_IN_ETH <- as.numeric(transactions$`Value_IN(ETH)`)
+transactions$Value_OUT_ETH <- as.numeric(transactions$`Value_OUT(ETH)`)
+transactions$Net_Value_ETH <- transactions$Value_IN_ETH - transactions$Value_OUT_ETH
+
+daily_net_value <- transactions %>%
+  group_by(Date) %>%
+  summarise(Net_Value_ETH = sum(Net_Value_ETH))
+
+transactions$Historical_Price_USD <- as.numeric(transactions$`Historical $Price/Eth`)
+
+ggplot(daily_net_value, aes(x=Date, y=Net_Value_ETH)) +
+  geom_line(aes(color="Net Value (ETH)")) +
+  geom_line(data=transactions, aes(x=Date, y=Historical_Price_USD, color="Historical Price (USD)")) +
+  scale_color_manual(values=c("Net Value (ETH)"="blue", "Historical Price (USD)"="green")) +
+  labs(title="Daily Net Value and Historical Prices", x="Date", y="Value") +
+  theme(legend.position="bottom")
+
+```
+
+
+## #6. Smart contract interaction
+
+If there are no smart contracts involved in the transactions for a particular Ethereum wallets, it could imply several things:
+
+Simple Wallet-to-Wallet Transfers: The wallet might be used only for sending and receiving Ether (ETH) between users, without engaging with applications that require smart contract interactions.
+
+No Participation in DeFi: The owner may not be participating in Decentralized Finance (DeFi) activities, which typically involve smart contracts for lending, borrowing, staking, liquidity provision, or yield farming.
+
+No Token Interactions: The wallet has not been used to create, trade, or manage ERC-20 tokens (fungible tokens like cryptocurrencies or utility tokens) or ERC-721/ERC-1155 tokens (non-fungible tokens, or NFTs), as these actions typically involve interactions with smart contract functions.
+
+Privacy or Specific Use Case: The wallet owner might intentionally be avoiding smart contract interactions for privacy reasons, or they may be using the wallet for a specific purpose that doesn't require smart contracts, like storing funds or simple payments.
+
+Limited Activity or New Wallet: The wallet might be relatively inactive, used infrequently, or it could be a new wallet that hasn't yet engaged in more complex Ethereum ecosystem activities.
+
+Avoidance of Risk: Interacting with smart contracts can sometimes involve risks, such as contract vulnerabilities or scams. The wallet owner might be risk-averse and therefore avoiding any smart contract-based transactions.
+
+Off-Chain Activities: The wallet's activities might be happening off-chain or on a layer 2 solution that isn't directly reflected on the Ethereum mainnet, thus not showing smart contract interactions in the mainnet transaction history.
+
+```{r, echo=FALSE}
+smart_contract_interactions <- transactions %>%
+  filter(ContractAddress != "")
+contract_interaction_summary <- smart_contract_interactions %>%
+  group_by(ContractAddress) %>%
+  summarise(NumberOfInteractions = n(),
+            AverageValue_IN = mean(`Value_IN(ETH)`, na.rm = TRUE),
+            AverageValue_OUT = mean(`Value_OUT(ETH)`, na.rm = TRUE)) %>%
+  arrange(desc(NumberOfInteractions))
+
+ggplot(contract_interaction_summary, aes(x = reorder(ContractAddress, NumberOfInteractions), y = NumberOfInteractions)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Smart Contract Interactions", x = "Contract Address", y = "Number of Interactions") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), axis.title.x = element_blank())
+```
+
